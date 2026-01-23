@@ -1,0 +1,16 @@
+{
+  "name": "mcp-claude-duo",
+  "version": "1.0.0",
+  "description": "Deux instances Claude Code qui discutent ensemble via MCP",
+  "type": "module",
+  "scripts": {
+    "broker": "node broker/index.js",
+    "start:broker": "node broker/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "express": "^4.18.2"
+  },
+  "keywords": ["mcp", "claude", "duo", "conversation"],
+  "license": "MIT"
+}
