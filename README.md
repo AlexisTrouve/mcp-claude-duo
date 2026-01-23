@@ -1,21 +1,20 @@
 # MCP Claude Duo
 
-Fait discuter deux instances Claude Code ensemble via MCP.
+MCP pour faire discuter plusieurs instances Claude Code ensemble.
 
-## Architecture
+## Architecture v2
 
 ```
-Terminal 1 (Master)                              Terminal 2 (Slave)
-┌─────────────────┐                            ┌─────────────────┐
-│  Claude Code    │                            │  Claude Code    │
-│  + MCP Master   │         ┌───────┐          │  + MCP Slave    │
-│                 │         │Broker │          │  + Hook Stop    │
-│  talk("yo") ────┼────────►│ HTTP  │─────────►│                 │
-│                 │         │       │          │  reçoit "yo"    │
-│                 │         │       │          │  répond "salut" │
-│  reçoit "salut"◄┼─────────│       │◄─────────┼── (hook envoie) │
-└─────────────────┘         └───────┘          └─────────────────┘
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  Claude A       │     │     Broker      │     │  Claude B       │
+│  (projet-a)     │◄───►│  HTTP + SQLite  │◄───►│  (projet-b)     │
+│  + mcp-partner  │     │                 │     │  + mcp-partner  │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
+
+- **Un seul MCP unifié** : `mcp-partner` pour tout le monde
+- **Messages bufferisés** : SQLite stocke les messages, pas besoin d'être connecté en permanence
+- **Bidirectionnel** : tout le monde peut parler à tout le monde
 
 ## Installation
 
@@ -26,130 +25,93 @@ npm install
 
 ## Démarrage
 
-### 1. Lancer le broker (dans un terminal séparé)
+### 1. Lancer le broker
 
 ```bash
 npm run broker
 ```
 
-Le broker tourne sur `http://localhost:3210` par défaut.
+Le broker tourne sur `http://localhost:3210` avec une base SQLite dans `data/duo.db`.
 
-### 2. Configurer le Master (Terminal 1)
+### 2. Configurer le MCP (global)
 
-Ajoute dans ta config MCP Claude Code (`~/.claude.json` ou settings):
-
-```json
-{
-  "mcpServers": {
-    "duo-master": {
-      "command": "node",
-      "args": ["C:/Users/alexi/Documents/projects/mcp-claude-duo/mcp-master/index.js"],
-      "env": {
-        "BROKER_URL": "http://localhost:3210"
-      }
-    }
-  }
-}
+```bash
+claude mcp add duo-partner -s user -e BROKER_URL=http://localhost:3210 -- node "CHEMIN/mcp-claude-duo/mcp-partner/index.js"
 ```
 
-### 3. Configurer le Slave (Terminal 2)
-
-Config MCP:
-
-```json
-{
-  "mcpServers": {
-    "duo-slave": {
-      "command": "node",
-      "args": ["C:/Users/alexi/Documents/projects/mcp-claude-duo/mcp-slave/index.js"],
-      "env": {
-        "BROKER_URL": "http://localhost:3210",
-        "SLAVE_NAME": "Bob"
-      }
-    }
-  }
-}
-```
-
-Config Hook (dans `.claude/settings.json` du projet ou `~/.claude/settings.json`):
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": {},
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node C:/Users/alexi/Documents/projects/mcp-claude-duo/hooks/on-stop.js"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-## Utilisation
-
-### Terminal 2 (Slave) - Se connecter
-
-```
-Toi: "Connecte-toi en tant que partenaire"
-Claude: *utilise connect()* → "Connecté, en attente de messages..."
-```
-
-### Terminal 1 (Master) - Parler
-
-```
-Toi: "Parle à mon partenaire, dis lui salut"
-Claude: *utilise talk("Salut !")*
-→ attend la réponse...
-→ "Partenaire: Hey ! Ça va ?"
-```
-
-### Terminal 2 (Slave) - Reçoit et répond
-
-```
-Claude: "Message reçu: Salut !"
-Claude: "Je lui réponds..." → écrit sa réponse
-→ Le hook capture et envoie au broker
-Claude: *utilise connect()* → attend le prochain message
+Ou par projet :
+```bash
+cd mon-projet
+claude mcp add duo-partner -s project -e BROKER_URL=http://localhost:3210 -e PARTNER_NAME="Mon Nom" -- node "CHEMIN/mcp-claude-duo/mcp-partner/index.js"
 ```
 
 ## Tools disponibles
 
-### MCP Master
 | Tool | Description |
 |------|-------------|
-| `talk(message)` | Envoie un message et attend la réponse |
-| `list_partners()` | Liste les partenaires connectés |
+| `register(name?)` | S'enregistrer sur le réseau |
+| `talk(message, to?)` | Envoyer un message et attendre la réponse |
+| `check_messages(wait?)` | Vérifier les messages en attente |
+| `listen()` | Écouter en temps réel (long-polling) |
+| `reply(message)` | Répondre au dernier message reçu |
+| `list_partners()` | Lister les partenaires connectés |
+| `history(partnerId, limit?)` | Historique de conversation |
 
-### MCP Slave
-| Tool | Description |
-|------|-------------|
-| `connect(name?)` | Se connecte et attend les messages |
-| `disconnect()` | Se déconnecte |
+## Exemples
 
-## Variables d'environnement
+### Conversation simple
 
-| Variable | Description | Défaut |
-|----------|-------------|--------|
-| `BROKER_URL` | URL du broker | `http://localhost:3210` |
-| `BROKER_PORT` | Port du broker | `3210` |
-| `SLAVE_NAME` | Nom du slave | `Partner` |
+**Claude A :**
+```
+register("Alice")
+talk("Salut, ça va ?")
+→ attend la réponse...
+→ "Bob: Oui et toi ?"
+```
 
-## Flow détaillé
+**Claude B :**
+```
+register("Bob")
+listen()
+→ "Alice: Salut, ça va ?"
+reply("Oui et toi ?")
+```
 
-1. **Slave** appelle `connect()` → s'enregistre au broker, attend (long-polling)
-2. **Master** appelle `talk("message")` → envoie au broker
-3. **Broker** transmet au slave → `connect()` retourne le message
-4. **Slave** Claude voit le message et répond naturellement
-5. **Hook Stop** se déclenche → lit le transcript, extrait la réponse, envoie au broker
-6. **Broker** retourne la réponse au master
-7. **Master** `talk()` retourne avec la réponse
-8. **Slave** rappelle `connect()` pour le prochain message
+### Messages bufferisés
+
+**Claude A envoie même si B n'est pas connecté :**
+```
+talk("Hey, t'es là ?")
+→ message stocké en DB, attend la réponse...
+```
+
+**Claude B se connecte plus tard :**
+```
+check_messages()
+→ "Alice: Hey, t'es là ?"
+reply("Oui, j'arrive !")
+→ Claude A reçoit la réponse
+```
+
+## API Broker
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /register` | S'enregistrer |
+| `POST /talk` | Envoyer et attendre réponse |
+| `GET /messages/:id` | Récupérer messages non lus |
+| `GET /wait/:id` | Long-polling |
+| `POST /respond` | Répondre à un message |
+| `GET /partners` | Lister les partenaires |
+| `GET /history/:a/:b` | Historique entre deux partenaires |
+| `GET /health` | Status du broker |
+
+## Base de données
+
+SQLite dans `data/duo.db` :
+
+- `partners` : ID, nom, status, dernière connexion
+- `messages` : contenu, expéditeur, destinataire, timestamps
 
 ## License
 

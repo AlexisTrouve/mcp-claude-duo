@@ -1,76 +1,22 @@
 import express from "express";
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { DB } from "./db.js";
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.BROKER_PORT || 3210;
 
-// Dossier pour sauvegarder les conversations
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const conversationsDir = join(__dirname, "..", "conversations");
-try {
-  mkdirSync(conversationsDir, { recursive: true });
-} catch {}
-
-// Conversations actives: { visitorId: { date, messages: [] } }
-const activeConversations = new Map();
-
-/**
- * Génère l'ID de conversation basé sur les deux partners et la date
- */
-function getConversationId(partnerId) {
-  const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
-  return `${partnerId}_${today}`;
-}
-
-/**
- * Sauvegarde un message dans la conversation
- */
-function saveMessage(partnerId, from, content) {
-  const convId = getConversationId(partnerId);
-  const convFile = join(conversationsDir, `${convId}.json`);
-
-  let conversation;
-  if (existsSync(convFile)) {
-    conversation = JSON.parse(readFileSync(convFile, "utf-8"));
-  } else {
-    conversation = {
-      id: convId,
-      partnerId,
-      startedAt: new Date().toISOString(),
-      messages: [],
-    };
-  }
-
-  conversation.messages.push({
-    from,
-    content,
-    timestamp: new Date().toISOString(),
-  });
-
-  writeFileSync(convFile, JSON.stringify(conversation, null, 2));
-  return conversation;
-}
-
-// Slaves connectés: { id: { name, connectedAt, waitingResponse } }
-const partners = new Map();
-
-// Messages en attente pour chaque slave: { partnerId: [{ from, content, timestamp }] }
-const pendingMessages = new Map();
-
-// Réponses en attente pour le master: { requestId: { resolve, timeout } }
+// Réponses en attente (pour talk qui attend une réponse)
+// { requestId: { resolve, fromId, toId } }
 const pendingResponses = new Map();
 
-// Long-polling requests en attente: { partnerId: { res, timeout } }
+// Long-polling en attente (pour check_messages)
+// { partnerId: { res, heartbeat } }
 const waitingPartners = new Map();
 
 /**
- * Slave s'enregistre
+ * S'enregistrer
  * POST /register
- * Body: { partnerId, name }
  */
 app.post("/register", (req, res) => {
   const { partnerId, name } = req.body;
@@ -79,46 +25,88 @@ app.post("/register", (req, res) => {
     return res.status(400).json({ error: "partnerId required" });
   }
 
-  partners.set(partnerId, {
-    name: name || partnerId,
-    connectedAt: Date.now(),
-    lastSeen: Date.now(),
-    status: "connected",
-  });
+  const partner = DB.registerPartner(partnerId, name || partnerId);
+  console.log(`[BROKER] Registered: ${partner.name} (${partnerId})`);
 
-  pendingMessages.set(partnerId, []);
-
-  console.log(`[BROKER] Slave registered: ${name || partnerId} (${partnerId})`);
-
-  res.json({ success: true, message: "Registered" });
+  res.json({ success: true, partner });
 });
 
 /**
- * Slave attend un message (long-polling)
+ * Envoyer un message et attendre la réponse
+ * POST /talk
+ */
+app.post("/talk", (req, res) => {
+  const { fromId, toId, content } = req.body;
+
+  if (!fromId || !toId || !content) {
+    return res.status(400).json({ error: "fromId, toId, and content required" });
+  }
+
+  const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+  // Enregistrer le message en DB
+  const messageId = DB.sendMessage(fromId, toId, content, requestId);
+
+  console.log(`[BROKER] ${fromId} -> ${toId}: "${content.substring(0, 50)}..."`);
+
+  // Notifier le destinataire s'il est en attente
+  notifyWaitingPartner(toId);
+
+  // Attendre la réponse (pas de timeout)
+  const responsePromise = new Promise((resolve) => {
+    pendingResponses.set(requestId, { resolve, fromId, toId, messageId });
+  });
+
+  responsePromise.then((response) => {
+    res.json(response);
+  });
+});
+
+/**
+ * Récupérer les messages non lus
+ * GET /messages/:partnerId
+ */
+app.get("/messages/:partnerId", (req, res) => {
+  const { partnerId } = req.params;
+
+  const messages = DB.getUndeliveredMessages(partnerId);
+
+  // Marquer comme délivrés
+  for (const msg of messages) {
+    DB.markDelivered(msg.id);
+  }
+
+  res.json({ messages });
+});
+
+/**
+ * Attendre des messages (long-polling)
  * GET /wait/:partnerId
  */
 app.get("/wait/:partnerId", (req, res) => {
   const { partnerId } = req.params;
 
-  if (!partners.has(partnerId)) {
-    return res.status(404).json({ error: "Slave not registered" });
-  }
+  // Mettre à jour le status
+  DB.setPartnerOnline(partnerId);
 
-  // Check s'il y a déjà un message en attente
-  const messages = pendingMessages.get(partnerId) || [];
+  // Check s'il y a des messages en attente
+  const messages = DB.getUndeliveredMessages(partnerId);
   if (messages.length > 0) {
-    const msg = messages.shift();
-    return res.json({ hasMessage: true, message: msg });
+    // Marquer comme délivrés
+    for (const msg of messages) {
+      DB.markDelivered(msg.id);
+    }
+    return res.json({ hasMessages: true, messages });
   }
 
   // Annuler l'ancien waiting s'il existe
   if (waitingPartners.has(partnerId)) {
     const old = waitingPartners.get(partnerId);
     if (old.heartbeat) clearInterval(old.heartbeat);
-    old.res.json({ hasMessage: false, message: null, reason: "reconnect" });
+    old.res.json({ hasMessages: false, messages: [], reason: "reconnect" });
   }
 
-  // Heartbeat toutes les 30 secondes pour garder la connexion vivante (bug Claude Code)
+  // Heartbeat toutes les 30s
   const heartbeat = setInterval(() => {
     try {
       res.write(": heartbeat\n\n");
@@ -131,181 +119,89 @@ app.get("/wait/:partnerId", (req, res) => {
   res.on("close", () => {
     clearInterval(heartbeat);
     waitingPartners.delete(partnerId);
-    // Marquer le partner comme déconnecté (mais garder dans la liste pour permettre reconnexion)
-    if (partners.has(partnerId)) {
-      const info = partners.get(partnerId);
-      info.lastSeen = Date.now();
-      info.status = "disconnected";
-    }
-    console.log(`[BROKER] Connection closed for ${partnerId}`);
+    DB.setPartnerOffline(partnerId);
+    console.log(`[BROKER] ${partnerId} disconnected`);
   });
 
   waitingPartners.set(partnerId, { res, heartbeat });
-
-  // Mettre à jour le status
-  if (partners.has(partnerId)) {
-    const info = partners.get(partnerId);
-    info.lastSeen = Date.now();
-    info.status = "waiting";
-  }
 });
 
 /**
- * Master envoie un message à un slave
- * POST /send
- * Body: { partnerId, content, requestId }
- */
-app.post("/send", (req, res) => {
-  const { partnerId, content, requestId } = req.body;
-
-  if (!partnerId || !content) {
-    return res.status(400).json({ error: "partnerId and content required" });
-  }
-
-  if (!partners.has(partnerId)) {
-    return res.status(404).json({ error: "Slave not found" });
-  }
-
-  const message = {
-    content,
-    requestId,
-    timestamp: Date.now(),
-  };
-
-  console.log(`[BROKER] Master -> ${partnerId}: "${content.substring(0, 50)}..."`);
-
-  // Sauvegarder le message du master
-  saveMessage(partnerId, "master", content);
-
-  // Si le slave est en attente (long-polling), lui envoyer directement
-  if (waitingPartners.has(partnerId)) {
-    const { res: partnerRes, heartbeat } = waitingPartners.get(partnerId);
-    if (heartbeat) clearInterval(heartbeat);
-    waitingPartners.delete(partnerId);
-    partnerRes.json({ hasMessage: true, message });
-  } else {
-    // Sinon, mettre en queue
-    const messages = pendingMessages.get(partnerId) || [];
-    messages.push(message);
-    pendingMessages.set(partnerId, messages);
-  }
-
-  // Attendre la réponse du slave (pas de timeout)
-  const responsePromise = new Promise((resolve) => {
-    pendingResponses.set(requestId, { resolve, timeout: null });
-  });
-
-  responsePromise.then((response) => {
-    res.json(response);
-  });
-});
-
-/**
- * Slave envoie sa réponse (appelé par le hook Stop)
+ * Répondre à un message
  * POST /respond
- * Body: { partnerId, requestId, content }
  */
 app.post("/respond", (req, res) => {
-  const { partnerId, requestId, content } = req.body;
+  const { fromId, toId, content, requestId } = req.body;
 
-  console.log(`[BROKER] ${partnerId} responded: "${content.substring(0, 50)}..."`);
+  console.log(`[BROKER] ${fromId} responded to ${toId}: "${content.substring(0, 50)}..."`);
 
-  // Sauvegarder la réponse du partner
-  if (partnerId && content) {
-    saveMessage(partnerId, partnerId, content);
-  }
-
+  // Trouver la requête en attente
   if (requestId && pendingResponses.has(requestId)) {
-    const { resolve, timeout } = pendingResponses.get(requestId);
-    clearTimeout(timeout);
+    const { resolve, messageId } = pendingResponses.get(requestId);
     pendingResponses.delete(requestId);
+
+    // Enregistrer la réponse en DB
+    DB.sendResponse(fromId, toId, content, messageId);
+
     resolve({ success: true, content });
+  } else {
+    // Pas de requête en attente, juste enregistrer comme message normal
+    DB.sendMessage(fromId, toId, content, null);
+    notifyWaitingPartner(toId);
   }
 
   res.json({ success: true });
 });
 
 /**
- * Liste les partners connectés
+ * Liste les partenaires
  * GET /partners
  */
 app.get("/partners", (req, res) => {
-  const list = [];
-  for (const [id, info] of partners) {
-    list.push({ id, ...info });
-  }
-  res.json({ partners: list });
+  const partners = DB.getAllPartners();
+  res.json({ partners });
 });
 
 /**
- * Slave se déconnecte
- * POST /disconnect
+ * Historique de conversation
+ * GET /history/:partner1/:partner2
  */
-app.post("/disconnect", (req, res) => {
-  const { partnerId } = req.body;
+app.get("/history/:partner1/:partner2", (req, res) => {
+  const { partner1, partner2 } = req.params;
+  const limit = parseInt(req.query.limit) || 50;
 
-  if (partners.has(partnerId)) {
-    partners.delete(partnerId);
-    pendingMessages.delete(partnerId);
-
-    if (waitingPartners.has(partnerId)) {
-      const { res: partnerRes, timeout } = waitingPartners.get(partnerId);
-      if (timeout) clearTimeout(timeout);
-      partnerRes.json({ hasMessage: false, disconnected: true });
-      waitingPartners.delete(partnerId);
-    }
-
-    console.log(`[BROKER] Slave disconnected: ${partnerId}`);
-  }
-
-  res.json({ success: true });
-});
-
-/**
- * Liste les conversations sauvegardées
- * GET /conversations
- */
-app.get("/conversations", (req, res) => {
-  try {
-    const files = readdirSync(conversationsDir).filter((f) => f.endsWith(".json"));
-    const conversations = files.map((f) => {
-      const conv = JSON.parse(readFileSync(join(conversationsDir, f), "utf-8"));
-      return {
-        id: conv.id,
-        partnerId: conv.partnerId,
-        startedAt: conv.startedAt,
-        messageCount: conv.messages.length,
-      };
-    });
-    res.json({ conversations });
-  } catch (error) {
-    res.json({ conversations: [] });
-  }
-});
-
-/**
- * Récupère une conversation spécifique
- * GET /conversations/:id
- */
-app.get("/conversations/:id", (req, res) => {
-  const { id } = req.params;
-  const convFile = join(conversationsDir, `${id}.json`);
-
-  if (!existsSync(convFile)) {
-    return res.status(404).json({ error: "Conversation not found" });
-  }
-
-  const conversation = JSON.parse(readFileSync(convFile, "utf-8"));
-  res.json(conversation);
+  const messages = DB.getConversation(partner1, partner2, limit);
+  res.json({ messages });
 });
 
 /**
  * Health check
  */
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", partners: partners.size });
+  const partners = DB.getAllPartners();
+  const online = partners.filter((p) => p.status === "online").length;
+  res.json({ status: "ok", partners: partners.length, online });
 });
 
+/**
+ * Notifie un partenaire en attente qu'il a des messages
+ */
+function notifyWaitingPartner(partnerId) {
+  if (waitingPartners.has(partnerId)) {
+    const { res, heartbeat } = waitingPartners.get(partnerId);
+    clearInterval(heartbeat);
+    waitingPartners.delete(partnerId);
+
+    const messages = DB.getUndeliveredMessages(partnerId);
+    for (const msg of messages) {
+      DB.markDelivered(msg.id);
+    }
+
+    res.json({ hasMessages: true, messages });
+  }
+}
+
 app.listen(PORT, () => {
-  console.log(`[BROKER] Claude Duo Broker running on http://localhost:${PORT}`);
+  console.log(`[BROKER] Claude Duo Broker v2 running on http://localhost:${PORT}`);
+  console.log(`[BROKER] Database: data/duo.db`);
 });

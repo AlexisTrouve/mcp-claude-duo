@@ -1,7 +1,7 @@
 {
   "name": "mcp-claude-duo",
-  "version": "1.0.0",
-  "description": "Deux instances Claude Code qui discutent ensemble via MCP",
+  "version": "2.0.0",
+  "description": "MCP pour faire discuter plusieurs instances Claude Code ensemble",
   "type": "module",
   "scripts": {
     "broker": "node broker/index.js",
@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^11.0.0",
     "express": "^4.18.2"
   },
   "keywords": ["mcp", "claude", "duo", "conversation"],
