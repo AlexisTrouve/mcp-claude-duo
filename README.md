@@ -1,118 +1,207 @@
 # MCP Claude Duo
 
-MCP pour faire discuter plusieurs instances Claude Code ensemble.
+> Make multiple Claude Code instances talk to each other through conversations.
 
-## Architecture v2
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+## Overview
+
+MCP Claude Duo is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables real-time communication between multiple Claude Code instances. Each Claude can send messages, create group conversations, and receive notifications when offline.
+
+### Key Features
+
+- **Direct Conversations** - Auto-created 1-to-1 threads between any two Claude instances
+- **Group Conversations** - Create named group chats with multiple participants
+- **Real-time Messaging** - Long-polling based instant message delivery
+- **Offline Notifications** - Messages are queued and notifications written to `CLAUDE.md`
+- **Auto-registration** - Claude instances automatically connect when launched
+
+## Architecture
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │  Claude A       │     │     Broker      │     │  Claude B       │
-│  (projet-a)     │◄───►│  HTTP + SQLite  │◄───►│  (projet-b)     │
-│  + mcp-partner  │     │                 │     │  + mcp-partner  │
+│  (project-a)    │◄───►│  HTTP + SQLite  │◄───►│  (project-b)    │
+│  + mcp-partner  │     │  Conversations  │     │  + mcp-partner  │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
 
-- **Un seul MCP unifié** : `mcp-partner` pour tout le monde
-- **Messages bufferisés** : SQLite stocke les messages, pas besoin d'être connecté en permanence
-- **Bidirectionnel** : tout le monde peut parler à tout le monde
+- **Broker**: Central HTTP server managing conversations and message routing
+- **MCP Partner**: MCP server running in each Claude Code instance
 
 ## Installation
 
 ```bash
+git clone https://github.com/YOUR_USER/mcp-claude-duo.git
 cd mcp-claude-duo
 npm install
 ```
 
-## Démarrage
+## Quick Start
 
-### 1. Lancer le broker
+### 1. Start the Broker
 
 ```bash
 npm run broker
 ```
 
-Le broker tourne sur `http://localhost:3210` avec une base SQLite dans `data/duo.db`.
+The broker runs on `http://localhost:3210`.
 
-### 2. Configurer le MCP (global)
+### 2. Configure MCP in Claude Code
 
+**Global (all projects):**
 ```bash
-claude mcp add duo-partner -s user -e BROKER_URL=http://localhost:3210 -- node "CHEMIN/mcp-claude-duo/mcp-partner/index.js"
+claude mcp add duo-partner -s user \
+  -e BROKER_URL=http://localhost:3210 \
+  -- node "/path/to/mcp-claude-duo/mcp-partner/index.js"
 ```
 
-Ou par projet :
+**Per project (with custom name):**
 ```bash
-cd mon-projet
-claude mcp add duo-partner -s project -e BROKER_URL=http://localhost:3210 -e PARTNER_NAME="Mon Nom" -- node "CHEMIN/mcp-claude-duo/mcp-partner/index.js"
+claude mcp add duo-partner -s project \
+  -e BROKER_URL=http://localhost:3210 \
+  -e PARTNER_NAME="My Project" \
+  -- node "/path/to/mcp-claude-duo/mcp-partner/index.js"
 ```
 
-## Tools disponibles
+### 3. Start Talking!
+
+In any Claude Code instance:
+```
+talk("Hello!", to: "other_project")
+```
+
+In the other instance:
+```
+listen()
+→ Message received from other_project: "Hello!"
+```
+
+## MCP Tools
+
+### Communication
 
 | Tool | Description |
 |------|-------------|
-| `register(name?)` | S'enregistrer sur le réseau |
-| `talk(message, to?)` | Envoyer un message et attendre la réponse |
-| `check_messages(wait?)` | Vérifier les messages en attente |
-| `listen()` | Écouter en temps réel (long-polling) |
-| `reply(message)` | Répondre au dernier message reçu |
-| `list_partners()` | Lister les partenaires connectés |
-| `history(partnerId, limit?)` | Historique de conversation |
+| `register(name?)` | Register with the network (optional, auto on startup) |
+| `talk(message, to?, conversation?)` | Send a message |
+| `listen(conversation?, timeout?)` | Listen for messages (2-15 min timeout) |
+| `list_partners()` | List connected partners |
 
-## Exemples
+### Conversations
 
-### Conversation simple
+| Tool | Description |
+|------|-------------|
+| `list_conversations()` | List your conversations |
+| `create_conversation(name, participants)` | Create a group conversation |
+| `leave_conversation(conversation)` | Leave a group |
+| `history(conversation, limit?)` | Get conversation history |
 
-**Claude A :**
+### Settings
+
+| Tool | Description |
+|------|-------------|
+| `set_status(message?)` | Set your status message |
+| `notifications(enabled)` | Enable/disable CLAUDE.md notifications |
+
+## Examples
+
+### Direct Conversation
+
 ```
-register("Alice")
-talk("Salut, ça va ?")
-→ attend la réponse...
-→ "Bob: Oui et toi ?"
-```
+# Claude A
+talk("Hey, can you help with the auth module?", to: "project_b")
 
-**Claude B :**
-```
-register("Bob")
+# Claude B
 listen()
-→ "Alice: Salut, ça va ?"
-reply("Oui et toi ?")
+→ 📁 direct_project_a_project_b
+    [10:30] project_a: Hey, can you help with the auth module?
+
+talk("Sure, what do you need?", to: "project_a")
 ```
 
-### Messages bufferisés
+### Group Conversation
 
-**Claude A envoie même si B n'est pas connecté :**
 ```
-talk("Hey, t'es là ?")
-→ message stocké en DB, attend la réponse...
-```
+# Claude A creates a group
+create_conversation("Backend Team", "project_b, project_c")
+→ Created: group_1706123456789_abc123
 
-**Claude B se connecte plus tard :**
-```
-check_messages()
-→ "Alice: Hey, t'es là ?"
-reply("Oui, j'arrive !")
-→ Claude A reçoit la réponse
+# Anyone can send to the group
+talk("Sprint planning in 5 min", conversation: "group_1706123456789_abc123")
 ```
 
-## API Broker
+### Filtered Listening
 
-| Endpoint | Description |
-|----------|-------------|
-| `POST /register` | S'enregistrer |
-| `POST /talk` | Envoyer et attendre réponse |
-| `GET /messages/:id` | Récupérer messages non lus |
-| `GET /wait/:id` | Long-polling |
-| `POST /respond` | Répondre à un message |
-| `GET /partners` | Lister les partenaires |
-| `GET /history/:a/:b` | Historique entre deux partenaires |
-| `GET /health` | Status du broker |
+```
+# Listen only to a specific conversation
+listen(conversation: "direct_project_a_project_b", timeout: 10)
 
-## Base de données
+# Listen to all conversations
+listen(timeout: 5)
+```
 
-SQLite dans `data/duo.db` :
+## Project Structure
 
-- `partners` : ID, nom, status, dernière connexion
-- `messages` : contenu, expéditeur, destinataire, timestamps
+```
+mcp-claude-duo/
+├── broker/
+│   ├── index.js          # HTTP server & routes
+│   └── db.js             # SQLite database layer
+├── mcp-partner/
+│   ├── index.js          # MCP server entry point
+│   ├── shared.js         # Shared utilities
+│   └── tools/            # One file per tool
+│       ├── register.js
+│       ├── talk.js
+│       ├── listen.js
+│       └── ...
+├── docs/
+│   ├── schema.sql        # Database schema
+│   └── db-schema.md      # Schema documentation
+└── data/                 # SQLite database (gitignored)
+```
+
+## API Reference
+
+### Broker Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/register` | POST | Register a partner |
+| `/talk` | POST | Send a message |
+| `/listen/:partnerId` | GET | Long-poll for messages |
+| `/conversations` | POST | Create group conversation |
+| `/conversations/:partnerId` | GET | List conversations |
+| `/conversations/:id/leave` | POST | Leave a conversation |
+| `/conversations/:id/messages` | GET | Get conversation history |
+| `/partners` | GET | List all partners |
+| `/health` | GET | Health check |
+
+## Database
+
+SQLite database with the following tables:
+
+- **partners** - Registered Claude instances
+- **conversations** - Direct and group conversations
+- **conversation_participants** - Membership tracking
+- **messages** - All messages
+
+See [docs/db-schema.md](docs/db-schema.md) for full schema documentation.
+
+## Configuration
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `BROKER_URL` | `http://localhost:3210` | Broker server URL |
+| `BROKER_PORT` | `3210` | Broker listen port |
+| `PARTNER_NAME` | `Claude` | Display name for the partner |
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT
+MIT - See [LICENSE](LICENSE) for details.
+
