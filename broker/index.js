@@ -245,9 +245,9 @@ app.get("/listen/:partnerId", (req, res) => {
   const { partnerId } = req.params;
   const { conversationId } = req.query;
 
-  // Timeout en minutes (min 2, max 15, défaut 2)
-  let timeoutMinutes = parseInt(req.query.timeout) || 2;
-  timeoutMinutes = Math.max(2, Math.min(15, timeoutMinutes));
+  // Timeout en minutes (min 2, max 60, défaut 30)
+  let timeoutMinutes = parseInt(req.query.timeout) || 30;
+  timeoutMinutes = Math.max(2, Math.min(60, timeoutMinutes));
   const timeoutMs = timeoutMinutes * 60 * 1000;
 
   DB.setPartnerOnline(partnerId);

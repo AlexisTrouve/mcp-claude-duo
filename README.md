@@ -85,7 +85,7 @@ listen()
 |------|-------------|
 | `register(name?)` | Register with the network (optional, auto on startup) |
 | `talk(message, to?, conversation?)` | Send a message |
-| `listen(conversation?, timeout?)` | Listen for messages (2-15 min timeout) |
+| `listen(conversation?, timeout?)` | Listen for messages (2-60 min timeout, default 30) |
 | `list_partners()` | List connected partners |
 
 ### Conversations

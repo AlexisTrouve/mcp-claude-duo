@@ -12,7 +12,7 @@ export const definition = {
       },
       timeout: {
         type: "number",
-        description: "Timeout en minutes (min: 2, max: 15, défaut: 2)",
+        description: "Timeout en minutes (min: 2, max: 60, défaut: 30)",
       },
     },
   },
@@ -22,8 +22,8 @@ export async function handler(args) {
   try {
     await ensureRegistered();
 
-    let timeoutMinutes = args.timeout || 2;
-    timeoutMinutes = Math.max(2, Math.min(15, timeoutMinutes));
+    let timeoutMinutes = args.timeout || 30;
+    timeoutMinutes = Math.max(2, Math.min(60, timeoutMinutes));
 
     let url = `/listen/${myId}?timeout=${timeoutMinutes}`;
     if (args.conversation) {
