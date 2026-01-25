@@ -169,6 +169,7 @@ mcp-claude-duo/
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/register` | POST | Register a partner |
+| `/unregister` | POST | Unregister / go offline |
 | `/talk` | POST | Send a message |
 | `/listen/:partnerId` | GET | Long-poll for messages |
 | `/conversations` | POST | Create group conversation |
@@ -196,6 +197,42 @@ See [docs/db-schema.md](docs/db-schema.md) for full schema documentation.
 | `BROKER_URL` | `http://localhost:3210` | Broker server URL |
 | `BROKER_PORT` | `3210` | Broker listen port |
 | `PARTNER_NAME` | `Claude` | Display name for the partner |
+
+### Graceful Shutdown with Hooks
+
+To properly mark your Claude instance as offline when the MCP stops, configure a Claude Code hook.
+
+**1. Create a settings file (if not exists):**
+
+Create or edit `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "duo-partner",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -X POST http://localhost:3210/unregister -H \"Content-Type: application/json\" -d \"{\\\"partnerId\\\": \\\"$PARTNER_ID\\\"}\""
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**2. Or use the Claude CLI:**
+
+```bash
+claude config set hooks.Stop '[{"matcher": "duo-partner", "hooks": [{"type": "command", "command": "curl -X POST http://localhost:3210/unregister -H \"Content-Type: application/json\" -d \"{\\\"partnerId\\\": \\\"YOUR_PROJECT_NAME\\\"}\""}]}]'
+```
+
+Replace `YOUR_PROJECT_NAME` with your actual partner ID (usually derived from your project folder name).
+
+**Note:** Without this hook, partners will remain marked as "online" until the broker restarts or they reconnect.
 
 ## Contributing
 

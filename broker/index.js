@@ -435,6 +435,35 @@ app.post("/partners/:partnerId/notifications", (req, res) => {
 });
 
 /**
+ * Se désenregistrer / passer offline
+ * POST /unregister
+ * Body: { partnerId }
+ */
+app.post("/unregister", (req, res) => {
+  const { partnerId } = req.body;
+
+  if (!partnerId) {
+    return res.status(400).json({ error: "partnerId required" });
+  }
+
+  // Fermer la connexion long-polling si active
+  if (waitingPartners.has(partnerId)) {
+    const { res: waitingRes, heartbeat, timeout } = waitingPartners.get(partnerId);
+    clearInterval(heartbeat);
+    if (timeout) clearTimeout(timeout);
+    waitingPartners.delete(partnerId);
+    try {
+      waitingRes.json({ hasMessages: false, messages: [], reason: "unregistered" });
+    } catch {}
+  }
+
+  DB.setPartnerOffline(partnerId);
+  console.log(`[BROKER] Unregistered: ${partnerId}`);
+
+  res.json({ success: true });
+});
+
+/**
  * Health check
  */
 app.get("/health", (req, res) => {

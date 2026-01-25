@@ -2,5 +2,6 @@ node_modules/
 .state/
 conversations/
 data/
+drafts/
 *.log
 *.db
