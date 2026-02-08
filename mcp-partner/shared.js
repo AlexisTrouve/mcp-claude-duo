@@ -1,6 +1,7 @@
 // Shared utilities and state for MCP partner
 
 const BROKER_URL = process.env.BROKER_URL || "http://localhost:3210";
+const BROKER_API_KEY = process.env.BROKER_API_KEY;
 const PARTNER_NAME = process.env.PARTNER_NAME || "Claude";
 
 // ID basé sur le dossier de travail (unique par projet)
@@ -20,6 +21,7 @@ async function brokerFetch(path, options = {}) {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...(BROKER_API_KEY ? { Authorization: `Bearer ${BROKER_API_KEY}` } : {}),
       ...options.headers,
     },
   };

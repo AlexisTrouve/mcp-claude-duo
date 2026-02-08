@@ -1,110 +1,30 @@
 import express from "express";
-import { existsSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { timingSafeEqual } from "crypto";
 import { DB } from "./db.js";
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.BROKER_PORT || 3210;
+const BROKER_API_KEY = process.env.BROKER_API_KEY;
+
+// Auth middleware — si BROKER_API_KEY est défini, toutes les requêtes doivent l'envoyer
+if (BROKER_API_KEY) {
+  const expectedHeader = `Bearer ${BROKER_API_KEY}`;
+  app.use((req, res, next) => {
+    const auth = req.headers.authorization || "";
+    if (auth.length !== expectedHeader.length ||
+        !timingSafeEqual(Buffer.from(auth), Buffer.from(expectedHeader))) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    next();
+  });
+  console.log("[BROKER] API key authentication enabled");
+}
 
 // Partenaires en écoute (long-polling)
 // { visitorId: { res, heartbeat, timeout, conversationId? } }
 const waitingPartners = new Map();
-
-/**
- * Écrit une notification dans le CLAUDE.md du projet destinataire
- */
-function writeNotificationToClaudeMd(partnerId, fromId, convId, content) {
-  const partner = DB.getPartner(partnerId);
-  if (!partner || !partner.project_path || !partner.notifications_enabled) {
-    return;
-  }
-
-  const claudeMdPath = join(partner.project_path, "CLAUDE.md");
-  const notificationMarker = "<!-- CLAUDE-DUO-NOTIFICATIONS -->";
-  const endMarker = "<!-- /CLAUDE-DUO-NOTIFICATIONS -->";
-
-  const timestamp = new Date().toLocaleString();
-  const convLabel = convId.startsWith("direct_") ? `DM de ${fromId}` : `[${convId}]`;
-  const newNotification = `- **[${timestamp}] ${convLabel}:** ${content.substring(0, 200)}${content.length > 200 ? "..." : ""}`;
-
-  let claudeMdContent = "";
-  if (existsSync(claudeMdPath)) {
-    claudeMdContent = readFileSync(claudeMdPath, "utf-8");
-  }
-
-  const startIdx = claudeMdContent.indexOf(notificationMarker);
-  const endIdx = claudeMdContent.indexOf(endMarker);
-
-  let notificationsSection = `
-${notificationMarker}
-## PRIORITE: Messages en attente (Claude Duo)
-
-**ACTION REQUISE: Tu as des messages non lus. Utilise \`listen\` pour les lire.**
-
-${newNotification}
-
-${endMarker}`;
-
-  if (startIdx !== -1 && endIdx !== -1) {
-    const existingSection = claudeMdContent.substring(startIdx + notificationMarker.length, endIdx);
-    const cleanedNotifications = existingSection
-      .replace("## PRIORITE: Messages en attente (Claude Duo)", "")
-      .replace(/\*\*ACTION REQUISE:.*\*\*/g, "")
-      .trim();
-
-    notificationsSection = `
-${notificationMarker}
-## PRIORITE: Messages en attente (Claude Duo)
-
-**ACTION REQUISE: Tu as des messages non lus. Utilise \`listen\` pour les lire.**
-
-${newNotification}
-${cleanedNotifications}
-
-${endMarker}`;
-
-    const beforeSection = claudeMdContent.substring(0, startIdx);
-    const afterSection = claudeMdContent.substring(endIdx + endMarker.length);
-    claudeMdContent = beforeSection.trimEnd() + "\n" + notificationsSection + afterSection;
-  } else {
-    claudeMdContent = claudeMdContent.trimEnd() + "\n" + notificationsSection;
-  }
-
-  try {
-    writeFileSync(claudeMdPath, claudeMdContent);
-    console.log(`[BROKER] Notification written to ${claudeMdPath}`);
-  } catch (err) {
-    console.error(`[BROKER] Failed to write notification to ${claudeMdPath}: ${err.message}`);
-  }
-}
-
-/**
- * Supprime les notifications du CLAUDE.md
- */
-function clearNotificationsFromClaudeMd(partnerId) {
-  const partner = DB.getPartner(partnerId);
-  if (!partner || !partner.project_path) return;
-
-  const claudeMdPath = join(partner.project_path, "CLAUDE.md");
-  if (!existsSync(claudeMdPath)) return;
-
-  const notificationMarker = "<!-- CLAUDE-DUO-NOTIFICATIONS -->";
-  const endMarker = "<!-- /CLAUDE-DUO-NOTIFICATIONS -->";
-
-  let claudeMdContent = readFileSync(claudeMdPath, "utf-8");
-  const startIdx = claudeMdContent.indexOf(notificationMarker);
-  const endIdx = claudeMdContent.indexOf(endMarker);
-
-  if (startIdx !== -1 && endIdx !== -1) {
-    const beforeSection = claudeMdContent.substring(0, startIdx);
-    const afterSection = claudeMdContent.substring(endIdx + endMarker.length);
-    claudeMdContent = (beforeSection.trimEnd() + afterSection).trim() + "\n";
-    writeFileSync(claudeMdPath, claudeMdContent);
-    console.log(`[BROKER] Notifications cleared from ${claudeMdPath}`);
-  }
-}
 
 /**
  * Notifie un partenaire en attente qu'il a des messages
@@ -134,10 +54,6 @@ function notifyWaitingPartner(partnerId, conversationId = null) {
       for (const cid of convIds) {
         DB.markConversationRead(cid, partnerId);
       }
-    }
-
-    if (messages.length > 0) {
-      clearNotificationsFromClaudeMd(partnerId);
     }
 
     try {
@@ -219,12 +135,8 @@ app.post("/talk", (req, res) => {
   // Notifier les participants
   let notifiedCount = 0;
   for (const targetId of targetIds) {
-    const notified = notifyWaitingPartner(targetId, conv.id);
-    if (notified) {
+    if (notifyWaitingPartner(targetId, conv.id)) {
       notifiedCount++;
-    } else {
-      // Pas en écoute, écrire notification
-      writeNotificationToClaudeMd(targetId, fromId, conv.id, content);
     }
   }
 
@@ -269,7 +181,6 @@ app.get("/listen/:partnerId", (req, res) => {
     for (const cid of convIds) {
       DB.markConversationRead(cid, partnerId);
     }
-    clearNotificationsFromClaudeMd(partnerId);
     return res.json({ hasMessages: true, messages });
   }
 
@@ -464,6 +375,28 @@ app.post("/unregister", (req, res) => {
 });
 
 /**
+ * Notifications non lues pour un partner (utilisé par le poller côté partner)
+ * GET /notifications/:partnerId
+ */
+app.get("/notifications/:partnerId", (req, res) => {
+  const { partnerId } = req.params;
+
+  const messages = DB.getUnreadMessages(partnerId);
+  if (!messages.length) {
+    return res.json({ notifications: [] });
+  }
+
+  const notifications = messages.map((m) => ({
+    from_id: m.from_id,
+    conversation_id: m.conversation_id,
+    content: m.content.substring(0, 200) + (m.content.length > 200 ? "..." : ""),
+    created_at: m.created_at,
+  }));
+
+  res.json({ notifications });
+});
+
+/**
  * Health check
  */
 app.get("/health", (req, res) => {
@@ -473,6 +406,9 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", partners: partners.length, online, listening });
 });
 
-app.listen(PORT, () => {
-  console.log(`[BROKER] Claude Duo Broker v3 (Conversations) running on http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`[BROKER] Claude Duo Broker v3 (Conversations) running on 0.0.0.0:${PORT}`);
+  if (!BROKER_API_KEY) {
+    console.warn("[BROKER] WARNING: No BROKER_API_KEY set — broker is accessible without authentication on all interfaces");
+  }
 });

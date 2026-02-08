@@ -1,4 +1,5 @@
 import { brokerFetch, myId, ensureRegistered } from "../shared.js";
+import { clearLocalNotifications } from "../notifications-poller.js";
 
 export const definition = {
   name: "listen",
@@ -50,6 +51,9 @@ export async function handler(args) {
         ],
       };
     }
+
+    // Nettoyer les notifications locales après réception
+    clearLocalNotifications();
 
     // Grouper par conversation
     const byConv = {};

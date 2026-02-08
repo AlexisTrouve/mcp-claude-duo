@@ -8,6 +8,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { brokerFetch, myId, PARTNER_NAME, cwd, setRegistered } from "./shared.js";
+import { startNotificationPoller } from "./notifications-poller.js";
 
 // Import all tools
 import * as register from "./tools/register.js";
@@ -84,6 +85,7 @@ async function main() {
     });
     setRegistered(true);
     console.error(`[MCP-PARTNER] Auto-registered as ${PARTNER_NAME} (${myId})`);
+    startNotificationPoller();
   } catch (error) {
     console.error(`[MCP-PARTNER] Auto-register failed: ${error.message}`);
   }
