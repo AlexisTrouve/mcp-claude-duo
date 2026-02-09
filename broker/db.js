@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { randomUUID } from "crypto";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { mkdirSync } from "fs";
@@ -24,6 +25,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS partners (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    partner_key TEXT UNIQUE,
     project_path TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -71,6 +73,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_conversations_archived ON conversations(is_archived);
 `);
 
+// Migration: ajouter partner_key si la colonne n'existe pas encore
+try {
+  db.exec(`ALTER TABLE partners ADD COLUMN partner_key TEXT UNIQUE`);
+} catch {
+  // Column already exists
+}
+
 // Génère un ID de conversation directe (déterministe, trié alphabétiquement)
 function getDirectConversationId(partnerId1, partnerId2) {
   const sorted = [partnerId1, partnerId2].sort();
@@ -81,8 +90,8 @@ function getDirectConversationId(partnerId1, partnerId2) {
 const stmts = {
   // Partners
   upsertPartner: db.prepare(`
-    INSERT INTO partners (id, name, project_path, last_seen, status)
-    VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'online')
+    INSERT INTO partners (id, name, partner_key, project_path, last_seen, status)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 'online')
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       project_path = excluded.project_path,
@@ -91,7 +100,8 @@ const stmts = {
   `),
 
   getPartner: db.prepare(`SELECT * FROM partners WHERE id = ?`),
-  getAllPartners: db.prepare(`SELECT * FROM partners ORDER BY last_seen DESC`),
+  getPartnerByKey: db.prepare(`SELECT * FROM partners WHERE partner_key = ?`),
+  getAllPartners: db.prepare(`SELECT id, name, project_path, created_at, last_seen, status, status_message, notifications_enabled FROM partners ORDER BY last_seen DESC`),
   updatePartnerStatus: db.prepare(`UPDATE partners SET status = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?`),
   updatePartnerNotifications: db.prepare(`UPDATE partners SET notifications_enabled = ? WHERE id = ?`),
   updatePartnerStatusMessage: db.prepare(`UPDATE partners SET status_message = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?`),
@@ -127,7 +137,8 @@ const stmts = {
   `),
 
   getParticipants: db.prepare(`
-    SELECT p.* FROM partners p
+    SELECT p.id, p.name, p.project_path, p.created_at, p.last_seen, p.status, p.status_message, p.notifications_enabled
+    FROM partners p
     JOIN conversation_participants cp ON p.id = cp.partner_id
     WHERE cp.conversation_id = ?
   `),
@@ -189,12 +200,17 @@ const stmts = {
 export const DB = {
   // Partners
   registerPartner(id, name, projectPath = null) {
-    stmts.upsertPartner.run(id, name, projectPath);
+    const partnerKey = randomUUID();
+    stmts.upsertPartner.run(id, name, partnerKey, projectPath);
     return stmts.getPartner.get(id);
   },
 
   getPartner(id) {
     return stmts.getPartner.get(id);
+  },
+
+  getPartnerByKey(key) {
+    return stmts.getPartnerByKey.get(key);
   },
 
   getAllPartners() {

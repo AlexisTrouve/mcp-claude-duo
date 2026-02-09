@@ -1,4 +1,4 @@
-import { brokerFetch, myId, ensureRegistered } from "../shared.js";
+import { brokerFetch, ensureRegistered } from "../shared.js";
 
 export const definition = {
   name: "leave_conversation",
@@ -8,7 +8,7 @@ export const definition = {
     properties: {
       conversation: {
         type: "string",
-        description: "ID de la conversation à quitter",
+        description: "ID de la conversation a quitter",
       },
     },
     required: ["conversation"],
@@ -21,7 +21,7 @@ export async function handler(args) {
 
     const response = await brokerFetch(`/conversations/${args.conversation}/leave`, {
       method: "POST",
-      body: JSON.stringify({ partnerId: myId }),
+      body: JSON.stringify({}),
     });
 
     if (response.error) {
@@ -31,9 +31,9 @@ export async function handler(args) {
       };
     }
 
-    const archived = response.archived ? " (conversation archivée car plus de participants)" : "";
+    const archived = response.archived ? " (conversation archivee car plus de participants)" : "";
     return {
-      content: [{ type: "text", text: `Tu as quitté la conversation.${archived}` }],
+      content: [{ type: "text", text: `Tu as quitte la conversation.${archived}` }],
     };
   } catch (error) {
     return {

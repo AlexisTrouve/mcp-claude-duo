@@ -7,7 +7,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { brokerFetch, myId, PARTNER_NAME, cwd, setRegistered } from "./shared.js";
+import { brokerFetch, myId, PARTNER_NAME, cwd, setRegistered, setPartnerKey, getPartnerKey } from "./shared.js";
 import { startNotificationPoller } from "./notifications-poller.js";
 
 // Import all tools
@@ -21,6 +21,9 @@ import * as leaveConversation from "./tools/leave_conversation.js";
 import * as history from "./tools/history.js";
 import * as setStatus from "./tools/set_status.js";
 import * as notifications from "./tools/notifications.js";
+import * as addFriend from "./tools/add_friend.js";
+import * as removeFriend from "./tools/remove_friend.js";
+import * as listFriends from "./tools/list_friends.js";
 
 // Tool registry
 const tools = {
@@ -34,13 +37,16 @@ const tools = {
   history,
   set_status: setStatus,
   notifications,
+  add_friend: addFriend,
+  remove_friend: removeFriend,
+  list_friends: listFriends,
 };
 
 // Create MCP server
 const server = new Server(
   {
     name: "mcp-claude-duo-partner",
-    version: "3.0.0",
+    version: "4.0.0",
   },
   {
     capabilities: {
@@ -79,13 +85,28 @@ async function main() {
 
   // Auto-register on startup
   try {
-    await brokerFetch("/register", {
+    const result = await brokerFetch("/register", {
       method: "POST",
       body: JSON.stringify({ partnerId: myId, name: PARTNER_NAME, projectPath: cwd }),
     });
-    setRegistered(true);
-    console.error(`[MCP-PARTNER] Auto-registered as ${PARTNER_NAME} (${myId})`);
-    startNotificationPoller();
+
+    if (result.error) {
+      console.error(`[MCP-PARTNER] Auto-register warning: ${result.error}`);
+    } else {
+      setRegistered(true);
+
+      if (result.partner?.partnerKey) {
+        setPartnerKey(result.partner.partnerKey);
+      }
+
+      const key = getPartnerKey();
+      console.error(`[MCP-PARTNER] Auto-registered as ${PARTNER_NAME} (${myId})`);
+      if (key && !process.env.PARTNER_KEY) {
+        console.error(`[MCP-PARTNER] Partner key: ${key} — set PARTNER_KEY env var to persist it`);
+      }
+
+      startNotificationPoller();
+    }
   } catch (error) {
     console.error(`[MCP-PARTNER] Auto-register failed: ${error.message}`);
   }

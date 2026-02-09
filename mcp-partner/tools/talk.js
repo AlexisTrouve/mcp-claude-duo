@@ -1,14 +1,15 @@
 import { brokerFetch, myId, ensureRegistered } from "../shared.js";
+import { getFriendKey } from "../friends.js";
 
 export const definition = {
   name: "talk",
-  description: "Envoie un message dans une conversation. Crée automatiquement une conv directe si besoin.",
+  description: "Envoie un message dans une conversation. Cree automatiquement une conv directe si besoin.",
   inputSchema: {
     type: "object",
     properties: {
       message: {
         type: "string",
-        description: "Le message à envoyer",
+        description: "Le message a envoyer",
       },
       to: {
         type: "string",
@@ -33,7 +34,7 @@ export async function handler(args) {
       const others = partners?.filter((p) => p.id !== myId);
       if (!others?.length) {
         return {
-          content: [{ type: "text", text: "Aucun partenaire enregistré. Précise `to` ou `conversation`." }],
+          content: [{ type: "text", text: "Aucun partenaire enregistre. Precise `to` ou `conversation`." }],
           isError: true,
         };
       }
@@ -44,7 +45,24 @@ export async function handler(args) {
           content: [
             {
               type: "text",
-              text: `Plusieurs partenaires: ${others.map((p) => p.id).join(", ")}. Précise \`to\` ou \`conversation\`.`,
+              text: `Plusieurs partenaires: ${others.map((p) => p.id).join(", ")}. Precise \`to\` ou \`conversation\`.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    // For DMs, auto-lookup friend key
+    let friendKey = null;
+    if (args.to) {
+      friendKey = getFriendKey(args.to);
+      if (!friendKey) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `"${args.to}" n'est pas dans ta liste d'amis. Utilise \`add_friend\` pour l'ajouter d'abord.`,
             },
           ],
           isError: true,
@@ -55,8 +73,8 @@ export async function handler(args) {
     const response = await brokerFetch("/talk", {
       method: "POST",
       body: JSON.stringify({
-        fromId: myId,
         to: args.to,
+        friendKey,
         conversationId: args.conversation,
         content: args.message,
       }),
@@ -70,14 +88,14 @@ export async function handler(args) {
     }
 
     const status = response.notified > 0
-      ? `${response.notified} notifié(s) en temps réel`
+      ? `${response.notified} notifie(s) en temps reel`
       : `${response.queued} en file d'attente`;
 
     return {
       content: [
         {
           type: "text",
-          text: `Message envoyé dans ${response.conversationId}\n${status}`,
+          text: `Message envoye dans ${response.conversationId}\n${status}`,
         },
       ],
     };

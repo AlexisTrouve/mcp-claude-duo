@@ -1,21 +1,28 @@
 import { brokerFetch, myId } from "../shared.js";
+import { isFriend } from "../friends.js";
 
 export const definition = {
   name: "list_partners",
-  description: "Liste tous les partenaires connectés au réseau.",
+  description: "Liste tous les partenaires connectes au reseau.",
   inputSchema: {
     type: "object",
-    properties: {},
+    properties: {
+      search: {
+        type: "string",
+        description: "Filtrer par nom ou ID (optionnel)",
+      },
+    },
   },
 };
 
-export async function handler() {
+export async function handler(args) {
   try {
-    const { partners } = await brokerFetch("/partners");
+    const params = args.search ? `?search=${encodeURIComponent(args.search)}` : "";
+    const { partners } = await brokerFetch(`/partners${params}`);
 
     if (!partners?.length) {
       return {
-        content: [{ type: "text", text: "Aucun partenaire enregistré." }],
+        content: [{ type: "text", text: "Aucun partenaire enregistre." }],
       };
     }
 
@@ -24,11 +31,12 @@ export async function handler() {
       const status = p.status === "online" ? "🟢" : "⚫";
       const listening = p.isListening ? " 👂" : "";
       const isMe = p.id === myId ? " (toi)" : "";
+      const friend = !isMe && isFriend(p.id) ? " ⭐" : "";
       const statusMsg = p.status_message ? ` — _${p.status_message}_` : "";
-      text += `${status}${listening} **${p.name}** (${p.id})${isMe}${statusMsg}\n`;
+      text += `${status}${listening}${friend} **${p.name}** (${p.id})${isMe}${statusMsg}\n`;
     }
 
-    text += "\n_Légende: 🟢 en ligne, ⚫ hors ligne, 👂 en écoute_";
+    text += "\n_Legende: 🟢 en ligne, ⚫ hors ligne, 👂 en ecoute, ⭐ ami_";
 
     return {
       content: [{ type: "text", text }],

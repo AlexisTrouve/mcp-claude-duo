@@ -1,28 +1,36 @@
 import express from "express";
-import { timingSafeEqual } from "crypto";
 import { DB } from "./db.js";
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.BROKER_PORT || 3210;
-const BROKER_API_KEY = process.env.BROKER_API_KEY;
 
-// Auth middleware — si BROKER_API_KEY est défini, toutes les requêtes doivent l'envoyer
-if (BROKER_API_KEY) {
-  const expectedHeader = `Bearer ${BROKER_API_KEY}`;
-  app.use((req, res, next) => {
-    const auth = req.headers.authorization || "";
-    if (auth.length !== expectedHeader.length ||
-        !timingSafeEqual(Buffer.from(auth), Buffer.from(expectedHeader))) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    next();
-  });
-  console.log("[BROKER] API key authentication enabled");
+/**
+ * Resolve partner from Bearer token
+ * Returns partner object or null
+ */
+function resolvePartner(req) {
+  const auth = req.headers.authorization || "";
+  if (!auth.startsWith("Bearer ")) return null;
+  const key = auth.slice(7);
+  if (!key) return null;
+  return DB.getPartnerByKey(key);
 }
 
-// Partenaires en écoute (long-polling)
+/**
+ * Auth middleware — requires valid partner key
+ */
+function requireAuth(req, res, next) {
+  const partner = resolvePartner(req);
+  if (!partner) {
+    return res.status(401).json({ error: "Unauthorized — invalid or missing partner key" });
+  }
+  req.partner = partner;
+  next();
+}
+
+// Partenaires en ecoute (long-polling)
 // { visitorId: { res, heartbeat, timeout, conversationId? } }
 const waitingPartners = new Map();
 
@@ -33,7 +41,7 @@ function notifyWaitingPartner(partnerId, conversationId = null) {
   if (waitingPartners.has(partnerId)) {
     const { res, heartbeat, timeout, conversationId: listeningConvId } = waitingPartners.get(partnerId);
 
-    // Si le partenaire écoute une conv spécifique, ne notifier que pour celle-là
+    // Si le partenaire ecoute une conv specifique, ne notifier que pour celle-la
     if (listeningConvId && conversationId && listeningConvId !== conversationId) {
       return false;
     }
@@ -42,7 +50,7 @@ function notifyWaitingPartner(partnerId, conversationId = null) {
     if (timeout) clearTimeout(timeout);
     waitingPartners.delete(partnerId);
 
-    // Récupérer les messages non lus
+    // Recuperer les messages non lus
     let messages;
     if (listeningConvId) {
       messages = DB.getUnreadMessagesInConv(partnerId, listeningConvId);
@@ -70,6 +78,8 @@ function notifyWaitingPartner(partnerId, conversationId = null) {
 /**
  * S'enregistrer
  * POST /register
+ * - Nouveau partner (pas de Bearer) : cree le partner, retourne la cle
+ * - Partner existant (Bearer) : met a jour name/projectPath
  */
 app.post("/register", (req, res) => {
   const { partnerId, name, projectPath } = req.body;
@@ -78,24 +88,42 @@ app.post("/register", (req, res) => {
     return res.status(400).json({ error: "partnerId required" });
   }
 
-  const partner = DB.registerPartner(partnerId, name || partnerId, projectPath);
-  console.log(`[BROKER] Registered: ${partner.name} (${partnerId})`);
+  const existing = DB.getPartner(partnerId);
 
-  res.json({ success: true, partner });
+  if (existing) {
+    // Partner exists — require Bearer to re-register
+    const partner = resolvePartner(req);
+    if (!partner || partner.id !== partnerId) {
+      return res.status(401).json({ error: "Partner already exists — provide your partner key to re-register" });
+    }
+    // Update info
+    const updated = DB.registerPartner(partnerId, name || existing.name, projectPath);
+    console.log(`[BROKER] Re-registered: ${updated.name} (${partnerId})`);
+    const { partner_key: pk1, ...safeUpdated } = updated;
+    return res.json({ success: true, partner: { ...safeUpdated, partnerKey: pk1 } });
+  }
+
+  // New partner — open registration
+  const partner = DB.registerPartner(partnerId, name || partnerId, projectPath);
+  console.log(`[BROKER] New registration: ${partner.name} (${partnerId})`);
+  const { partner_key: pk2, ...safePartner } = partner;
+  res.json({ success: true, partner: { ...safePartner, partnerKey: pk2 } });
 });
 
 /**
  * Envoyer un message dans une conversation
  * POST /talk
- * Body: { fromId, to?, conversationId?, content }
- * - to: pour créer/trouver une conv directe
- * - conversationId: pour envoyer dans une conv existante
+ * Auth: Bearer sender key
+ * Body: { to?, friendKey?, conversationId?, content }
+ * - DM: requires friendKey (recipient's key)
+ * - Existing conv: just needs to be participant
  */
-app.post("/talk", (req, res) => {
-  const { fromId, to, conversationId, content } = req.body;
+app.post("/talk", requireAuth, (req, res) => {
+  const sender = req.partner;
+  const { to, friendKey, conversationId, content } = req.body;
 
-  if (!fromId || !content) {
-    return res.status(400).json({ error: "fromId and content required" });
+  if (!content) {
+    return res.status(400).json({ error: "content required" });
   }
 
   if (!to && !conversationId) {
@@ -111,26 +139,36 @@ app.post("/talk", (req, res) => {
     if (!conv) {
       return res.status(404).json({ error: "Conversation not found" });
     }
-    if (!DB.isParticipant(conversationId, fromId)) {
+    if (!DB.isParticipant(conversationId, sender.id)) {
       return res.status(403).json({ error: "Not a participant of this conversation" });
     }
-    targetIds = DB.getParticipants(conversationId).map(p => p.id).filter(id => id !== fromId);
+    targetIds = DB.getParticipants(conversationId).map(p => p.id).filter(id => id !== sender.id);
   } else {
-    // Conversation directe
+    // Conversation directe — require friendKey
+    if (!friendKey) {
+      return res.status(403).json({ error: "friendKey required for direct messages" });
+    }
+
+    // Validate friendKey matches the recipient
     const recipient = DB.getPartner(to);
     if (!recipient) {
       return res.status(404).json({
         error: "Destinataire inconnu",
-        message: `"${to}" n'est pas enregistré. Il doit se register d'abord.`
+        message: `"${to}" n'est pas enregistre.`
       });
     }
-    conv = DB.getOrCreateDirectConversation(fromId, to);
+
+    if (recipient.partner_key !== friendKey) {
+      return res.status(403).json({ error: "Invalid friendKey — does not match recipient" });
+    }
+
+    conv = DB.getOrCreateDirectConversation(sender.id, to);
     targetIds = [to];
   }
 
   // Envoyer le message
-  const msgId = DB.sendMessage(conv.id, fromId, content);
-  console.log(`[BROKER] ${fromId} -> ${conv.id}: "${content.substring(0, 50)}..."`);
+  const msgId = DB.sendMessage(conv.id, sender.id, content);
+  console.log(`[BROKER] ${sender.id} -> ${conv.id}: "${content.substring(0, 50)}..."`);
 
   // Notifier les participants
   let notifiedCount = 0;
@@ -150,21 +188,26 @@ app.post("/talk", (req, res) => {
 });
 
 /**
- * Écouter les messages (long-polling)
- * GET /listen/:partnerId?conversationId=xxx&timeout=5
+ * Ecouter les messages (long-polling)
+ * GET /listen/:partnerId
+ * Auth: Bearer must match partnerId
  */
-app.get("/listen/:partnerId", (req, res) => {
+app.get("/listen/:partnerId", requireAuth, (req, res) => {
   const { partnerId } = req.params;
   const { conversationId } = req.query;
 
-  // Timeout en minutes (min 10, max 60, défaut 30)
+  if (req.partner.id !== partnerId) {
+    return res.status(403).json({ error: "Partner key does not match partnerId" });
+  }
+
+  // Timeout en minutes (min 10, max 60, defaut 30)
   let timeoutMinutes = parseInt(req.query.timeout) || 30;
   timeoutMinutes = Math.max(10, Math.min(60, timeoutMinutes));
   const timeoutMs = timeoutMinutes * 60 * 1000;
 
   DB.setPartnerOnline(partnerId);
 
-  // Vérifier s'il y a des messages non lus
+  // Verifier s'il y a des messages non lus
   let messages;
   if (conversationId) {
     if (!DB.isParticipant(conversationId, partnerId)) {
@@ -220,26 +263,39 @@ app.get("/listen/:partnerId", (req, res) => {
 });
 
 /**
- * Créer une conversation de groupe
+ * Creer une conversation de groupe
  * POST /conversations
- * Body: { creatorId, name, participants: [] }
+ * Auth: Bearer creator key
+ * Body: { name, participants: [], friendKeys: [] }
+ * friendKeys[i] = partner key of participants[i]
  */
-app.post("/conversations", (req, res) => {
-  const { creatorId, name, participants } = req.body;
+app.post("/conversations", requireAuth, (req, res) => {
+  const creator = req.partner;
+  const { name, participants, friendKeys } = req.body;
 
-  if (!creatorId || !name || !participants?.length) {
-    return res.status(400).json({ error: "creatorId, name, and participants required" });
+  if (!name || !participants?.length) {
+    return res.status(400).json({ error: "name and participants required" });
   }
 
-  // Vérifier que tous les participants existent
-  for (const pid of participants) {
-    if (!DB.getPartner(pid)) {
+  if (!friendKeys || friendKeys.length !== participants.length) {
+    return res.status(400).json({ error: "friendKeys required — one key per participant" });
+  }
+
+  // Verify all participants exist and friendKeys match
+  for (let i = 0; i < participants.length; i++) {
+    const pid = participants[i];
+    if (pid === creator.id) continue; // skip self
+    const p = DB.getPartner(pid);
+    if (!p) {
       return res.status(404).json({ error: `Partner "${pid}" not found` });
+    }
+    if (p.partner_key !== friendKeys[i]) {
+      return res.status(403).json({ error: `Invalid friendKey for participant "${pid}"` });
     }
   }
 
-  const conv = DB.createGroupConversation(name, creatorId, participants);
-  console.log(`[BROKER] Group conversation created: ${conv.id} by ${creatorId}`);
+  const conv = DB.createGroupConversation(name, creator.id, participants);
+  console.log(`[BROKER] Group conversation created: ${conv.id} by ${creator.id}`);
 
   res.json({ success: true, conversation: conv });
 });
@@ -247,12 +303,18 @@ app.post("/conversations", (req, res) => {
 /**
  * Lister les conversations d'un partenaire
  * GET /conversations/:partnerId
+ * Auth: Bearer must match partnerId
  */
-app.get("/conversations/:partnerId", (req, res) => {
+app.get("/conversations/:partnerId", requireAuth, (req, res) => {
   const { partnerId } = req.params;
+
+  if (req.partner.id !== partnerId) {
+    return res.status(403).json({ error: "Partner key does not match partnerId" });
+  }
+
   const conversations = DB.getConversationsByPartner(partnerId);
 
-  // Ajouter les participants à chaque conversation
+  // Ajouter les participants a chaque conversation
   const convsWithParticipants = conversations.map(conv => ({
     ...conv,
     participants: DB.getParticipants(conv.id).map(p => ({ id: p.id, name: p.name }))
@@ -264,15 +326,11 @@ app.get("/conversations/:partnerId", (req, res) => {
 /**
  * Quitter une conversation
  * POST /conversations/:conversationId/leave
- * Body: { partnerId }
+ * Auth: Bearer identifies the partner (no partnerId in body needed)
  */
-app.post("/conversations/:conversationId/leave", (req, res) => {
+app.post("/conversations/:conversationId/leave", requireAuth, (req, res) => {
   const { conversationId } = req.params;
-  const { partnerId } = req.body;
-
-  if (!partnerId) {
-    return res.status(400).json({ error: "partnerId required" });
-  }
+  const partnerId = req.partner.id;
 
   const result = DB.leaveConversation(conversationId, partnerId);
 
@@ -287,14 +345,19 @@ app.post("/conversations/:conversationId/leave", (req, res) => {
 /**
  * Obtenir l'historique d'une conversation
  * GET /conversations/:conversationId/messages?limit=50
+ * Auth: Bearer must be a participant
  */
-app.get("/conversations/:conversationId/messages", (req, res) => {
+app.get("/conversations/:conversationId/messages", requireAuth, (req, res) => {
   const { conversationId } = req.params;
   const limit = parseInt(req.query.limit) || 50;
 
   const conv = DB.getConversation(conversationId);
   if (!conv) {
     return res.status(404).json({ error: "Conversation not found" });
+  }
+
+  if (!DB.isParticipant(conversationId, req.partner.id)) {
+    return res.status(403).json({ error: "Not a participant of this conversation" });
   }
 
   const messages = DB.getMessages(conversationId, limit);
@@ -304,58 +367,81 @@ app.get("/conversations/:conversationId/messages", (req, res) => {
 /**
  * Obtenir les participants d'une conversation
  * GET /conversations/:conversationId/participants
+ * Auth: Bearer must be a participant
  */
-app.get("/conversations/:conversationId/participants", (req, res) => {
+app.get("/conversations/:conversationId/participants", requireAuth, (req, res) => {
   const { conversationId } = req.params;
+
+  if (!DB.isParticipant(conversationId, req.partner.id)) {
+    return res.status(403).json({ error: "Not a participant of this conversation" });
+  }
+
   const participants = DB.getParticipants(conversationId);
   res.json({ participants });
 });
 
 /**
- * Liste les partenaires
- * GET /partners
+ * Liste les partenaires (public, sans keys)
+ * GET /partners?search=xxx
  */
 app.get("/partners", (req, res) => {
-  const partners = DB.getAllPartners().map((p) => ({
+  let partners = DB.getAllPartners().map((p) => ({
     ...p,
     isListening: waitingPartners.has(p.id),
   }));
+
+  const search = req.query.search;
+  if (search) {
+    const q = search.toLowerCase();
+    partners = partners.filter(p =>
+      p.id.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)
+    );
+  }
+
   res.json({ partners });
 });
 
 /**
- * Définir le status message d'un partenaire
+ * Definir le status message d'un partenaire
  * POST /partners/:partnerId/status
+ * Auth: Bearer must match partnerId
  */
-app.post("/partners/:partnerId/status", (req, res) => {
+app.post("/partners/:partnerId/status", requireAuth, (req, res) => {
   const { partnerId } = req.params;
+
+  if (req.partner.id !== partnerId) {
+    return res.status(403).json({ error: "Partner key does not match partnerId" });
+  }
+
   const { message } = req.body;
   DB.setStatusMessage(partnerId, message || null);
   res.json({ success: true });
 });
 
 /**
- * Activer/désactiver les notifications
+ * Activer/desactiver les notifications
  * POST /partners/:partnerId/notifications
+ * Auth: Bearer must match partnerId
  */
-app.post("/partners/:partnerId/notifications", (req, res) => {
+app.post("/partners/:partnerId/notifications", requireAuth, (req, res) => {
   const { partnerId } = req.params;
+
+  if (req.partner.id !== partnerId) {
+    return res.status(403).json({ error: "Partner key does not match partnerId" });
+  }
+
   const { enabled } = req.body;
   DB.setNotificationsEnabled(partnerId, enabled);
   res.json({ success: true });
 });
 
 /**
- * Se désenregistrer / passer offline
+ * Se desenregistrer / passer offline
  * POST /unregister
- * Body: { partnerId }
+ * Auth: Bearer identifies the partner
  */
-app.post("/unregister", (req, res) => {
-  const { partnerId } = req.body;
-
-  if (!partnerId) {
-    return res.status(400).json({ error: "partnerId required" });
-  }
+app.post("/unregister", requireAuth, (req, res) => {
+  const partnerId = req.partner.id;
 
   // Fermer la connexion long-polling si active
   if (waitingPartners.has(partnerId)) {
@@ -375,11 +461,16 @@ app.post("/unregister", (req, res) => {
 });
 
 /**
- * Notifications non lues pour un partner (utilisé par le poller côté partner)
+ * Notifications non lues pour un partner
  * GET /notifications/:partnerId
+ * Auth: Bearer must match partnerId
  */
-app.get("/notifications/:partnerId", (req, res) => {
+app.get("/notifications/:partnerId", requireAuth, (req, res) => {
   const { partnerId } = req.params;
+
+  if (req.partner.id !== partnerId) {
+    return res.status(403).json({ error: "Partner key does not match partnerId" });
+  }
 
   const messages = DB.getUnreadMessages(partnerId);
   if (!messages.length) {
@@ -397,7 +488,7 @@ app.get("/notifications/:partnerId", (req, res) => {
 });
 
 /**
- * Health check
+ * Health check (public)
  */
 app.get("/health", (req, res) => {
   const partners = DB.getAllPartners();
@@ -407,8 +498,5 @@ app.get("/health", (req, res) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`[BROKER] Claude Duo Broker v3 (Conversations) running on 0.0.0.0:${PORT}`);
-  if (!BROKER_API_KEY) {
-    console.warn("[BROKER] WARNING: No BROKER_API_KEY set — broker is accessible without authentication on all interfaces");
-  }
+  console.log(`[BROKER] Claude Duo Broker v4 (Partner Keys) running on 0.0.0.0:${PORT}`);
 });

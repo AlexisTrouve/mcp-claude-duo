@@ -1,15 +1,16 @@
 // Shared utilities and state for MCP partner
 
 const BROKER_URL = process.env.BROKER_URL || "http://localhost:3210";
-const BROKER_API_KEY = process.env.BROKER_API_KEY;
+const PARTNER_KEY = process.env.PARTNER_KEY || "";
 const PARTNER_NAME = process.env.PARTNER_NAME || "Claude";
 
-// ID basé sur le dossier de travail (unique par projet)
+// ID base sur le dossier de travail (unique par projet)
 const cwd = process.cwd();
 const projectName = cwd.split(/[/\\]/).pop().toLowerCase().replace(/[^a-z0-9]/g, "_");
 const myId = projectName || "partner";
 
 let isRegistered = false;
+let partnerKey = PARTNER_KEY;
 
 /**
  * Appel HTTP au broker
@@ -21,7 +22,7 @@ async function brokerFetch(path, options = {}) {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      ...(BROKER_API_KEY ? { Authorization: `Bearer ${BROKER_API_KEY}` } : {}),
+      ...(partnerKey ? { Authorization: `Bearer ${partnerKey}` } : {}),
       ...options.headers,
     },
   };
@@ -31,14 +32,19 @@ async function brokerFetch(path, options = {}) {
 }
 
 /**
- * S'enregistrer auprès du broker
+ * S'enregistrer aupres du broker
  */
 async function ensureRegistered() {
   if (!isRegistered) {
-    await brokerFetch("/register", {
+    const result = await brokerFetch("/register", {
       method: "POST",
       body: JSON.stringify({ partnerId: myId, name: PARTNER_NAME, projectPath: cwd }),
     });
+
+    if (result.partner?.partnerKey) {
+      partnerKey = result.partner.partnerKey;
+    }
+
     isRegistered = true;
     console.error(`[MCP-PARTNER] Registered as ${PARTNER_NAME} (${myId}) at ${cwd}`);
   }
@@ -46,6 +52,14 @@ async function ensureRegistered() {
 
 function setRegistered(value) {
   isRegistered = value;
+}
+
+function setPartnerKey(key) {
+  partnerKey = key;
+}
+
+function getPartnerKey() {
+  return partnerKey;
 }
 
 export {
@@ -57,4 +71,6 @@ export {
   brokerFetch,
   ensureRegistered,
   setRegistered,
+  setPartnerKey,
+  getPartnerKey,
 };
