@@ -75,10 +75,13 @@ db.exec(`
 
 // Migration: ajouter partner_key si la colonne n'existe pas encore
 try {
-  db.exec(`ALTER TABLE partners ADD COLUMN partner_key TEXT UNIQUE`);
+  db.exec(`ALTER TABLE partners ADD COLUMN partner_key TEXT`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_partners_key ON partners(partner_key)`);
 } catch {
   // Column already exists
 }
+// Ensure index exists even if column was added by CREATE TABLE
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_partners_key ON partners(partner_key)`);
 
 // Génère un ID de conversation directe (déterministe, trié alphabétiquement)
 function getDirectConversationId(partnerId1, partnerId2) {
