@@ -4,10 +4,10 @@ const BROKER_URL = process.env.BROKER_URL || "http://localhost:3210";
 const PARTNER_KEY = process.env.PARTNER_KEY || "";
 const PARTNER_NAME = process.env.PARTNER_NAME || "Claude";
 
-// ID base sur le dossier de travail (unique par projet)
+// ID: env var if set, otherwise derived from cwd
 const cwd = process.cwd();
 const projectName = cwd.split(/[/\\]/).pop().toLowerCase().replace(/[^a-z0-9]/g, "_");
-const myId = projectName || "partner";
+const myId = process.env.PARTNER_ID || projectName || "partner";
 
 let isRegistered = false;
 let partnerKey = PARTNER_KEY;
@@ -40,6 +40,11 @@ async function ensureRegistered() {
       method: "POST",
       body: JSON.stringify({ partnerId: myId, name: PARTNER_NAME, projectPath: cwd }),
     });
+
+    if (result.error) {
+      console.error(`[MCP-PARTNER] Registration failed: ${result.error}`);
+      return;
+    }
 
     if (result.partner?.partnerKey) {
       partnerKey = result.partner.partnerKey;

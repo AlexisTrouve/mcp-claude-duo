@@ -62,6 +62,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
+// Tools that already deal with messages — skip piggyback to avoid noise/loops
+const SKIP_PIGGYBACK = new Set(["listen", "notifications", "register"]);
+
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
@@ -74,7 +77,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  return await tool.handler(args || {});
+  const result = await tool.handler(args || {});
+
+  // Piggyback: check unread messages on every tool call
+  if (!SKIP_PIGGYBACK.has(name)) {
+    try {
+      const notifs = await brokerFetch(`/notifications/${myId}`);
+      if (notifs.notifications?.length > 0) {
+        const lines = notifs.notifications.map((n) => {
+          const time = new Date(n.created_at).toLocaleTimeString();
+          return `  [${time}] ${n.from_id}: ${n.content}`;
+        });
+        result.content.unshift({
+          type: "text",
+          text: `📨 **Messages non lus (${notifs.notifications.length}):**\n${lines.join("\n")}\n\n---`,
+        });
+      }
+    } catch {}
+  }
+
+  return result;
 });
 
 // Start server

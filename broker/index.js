@@ -26,6 +26,8 @@ function requireAuth(req, res, next) {
   if (!partner) {
     return res.status(401).json({ error: "Unauthorized — invalid or missing partner key" });
   }
+  // Update last_seen on every authenticated request (acts as heartbeat)
+  DB.touchPartner(partner.id);
   req.partner = partner;
   next();
 }
@@ -496,6 +498,21 @@ app.get("/health", (req, res) => {
   const listening = waitingPartners.size;
   res.json({ status: "ok", partners: partners.length, online, listening });
 });
+
+// Stale cleanup: mark partners offline if last_seen > 5 min and not listening
+const STALE_MS = 5 * 60 * 1000;
+setInterval(() => {
+  // Don't mark listening partners as stale
+  const listeningIds = [...waitingPartners.keys()];
+  for (const id of listeningIds) {
+    DB.touchPartner(id);
+  }
+  const cutoff = new Date(Date.now() - STALE_MS).toISOString().replace("T", " ").slice(0, 19);
+  const count = DB.markStaleOffline(cutoff);
+  if (count > 0) {
+    console.log(`[BROKER] Cleanup: ${count} stale partner(s) set offline`);
+  }
+}, 60_000);
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`[BROKER] Claude Duo Broker v4 (Partner Keys) running on 0.0.0.0:${PORT}`);

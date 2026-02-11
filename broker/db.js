@@ -105,6 +105,7 @@ const stmts = {
   getPartner: db.prepare(`SELECT * FROM partners WHERE id = ?`),
   getPartnerByKey: db.prepare(`SELECT * FROM partners WHERE partner_key = ?`),
   getAllPartners: db.prepare(`SELECT id, name, project_path, created_at, last_seen, status, status_message, notifications_enabled FROM partners ORDER BY last_seen DESC`),
+  touchPartner: db.prepare(`UPDATE partners SET last_seen = CURRENT_TIMESTAMP WHERE id = ?`),
   updatePartnerStatus: db.prepare(`UPDATE partners SET status = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?`),
   updatePartnerNotifications: db.prepare(`UPDATE partners SET notifications_enabled = ? WHERE id = ?`),
   updatePartnerStatusMessage: db.prepare(`UPDATE partners SET status_message = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?`),
@@ -220,12 +221,22 @@ export const DB = {
     return stmts.getAllPartners.all();
   },
 
+  touchPartner(id) {
+    stmts.touchPartner.run(id);
+  },
+
   setPartnerOffline(id) {
     stmts.updatePartnerStatus.run("offline", id);
   },
 
   setPartnerOnline(id) {
     stmts.updatePartnerStatus.run("online", id);
+  },
+
+  markStaleOffline(cutoffIso) {
+    return db.prepare(
+      `UPDATE partners SET status = 'offline' WHERE status = 'online' AND last_seen < ?`
+    ).run(cutoffIso).changes;
   },
 
   setNotificationsEnabled(id, enabled) {
