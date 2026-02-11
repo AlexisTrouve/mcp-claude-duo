@@ -15,9 +15,10 @@ try {
 const dbPath = join(dataDir, "duo.db");
 const db = new Database(dbPath);
 
-// Activer les foreign keys
+// Activer les foreign keys et forcer le checkpoint WAL pour éviter la perte de données
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
+db.pragma("wal_autocheckpoint = 1"); // Checkpoint after every page write
 
 // Créer les tables
 db.exec(`
