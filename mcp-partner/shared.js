@@ -1,5 +1,8 @@
 // Shared utilities and state for MCP partner
 
+import { readFileSync, writeFileSync } from "fs";
+import { join } from "path";
+
 const BROKER_URL = process.env.BROKER_URL || "http://localhost:3210";
 const PARTNER_KEY = process.env.PARTNER_KEY || "";
 const PARTNER_NAME = process.env.PARTNER_NAME || "Claude";
@@ -9,8 +12,28 @@ const cwd = process.cwd();
 const projectName = cwd.split(/[/\\]/).pop().toLowerCase().replace(/[^a-z0-9]/g, "_");
 const myId = process.env.PARTNER_ID || projectName || "partner";
 
+// Persist key to a local file so it survives MCP restarts
+const keyFilePath = join(cwd, ".claude-duo-key");
+
+function loadPersistedKey() {
+  if (PARTNER_KEY) return PARTNER_KEY; // env var takes priority
+  try {
+    const data = JSON.parse(readFileSync(keyFilePath, "utf-8"));
+    if (data.id === myId && data.key) return data.key;
+  } catch {}
+  return "";
+}
+
+function persistKey(key) {
+  try {
+    writeFileSync(keyFilePath, JSON.stringify({ id: myId, key }));
+  } catch (err) {
+    console.error(`[MCP-PARTNER] Failed to persist key: ${err.message}`);
+  }
+}
+
 let isRegistered = false;
-let partnerKey = PARTNER_KEY;
+let partnerKey = loadPersistedKey();
 
 /**
  * Appel HTTP au broker
@@ -48,6 +71,7 @@ async function ensureRegistered() {
 
     if (result.partner?.partnerKey) {
       partnerKey = result.partner.partnerKey;
+      persistKey(partnerKey);
     }
 
     isRegistered = true;
@@ -61,6 +85,7 @@ function setRegistered(value) {
 
 function setPartnerKey(key) {
   partnerKey = key;
+  persistKey(key);
 }
 
 function getPartnerKey() {
