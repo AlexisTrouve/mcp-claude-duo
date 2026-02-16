@@ -5,3 +5,8 @@ data/
 drafts/
 *.log
 *.db
+
+# Local config
+.claude-duo-friends.json
+CLAUDE.md
+proxy_connect.py
