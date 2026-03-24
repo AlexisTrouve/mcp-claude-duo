@@ -1,6 +1,7 @@
-# Structure de la Base de Données v3
+# Structure de la Base de Données
 
 La base SQLite est créée automatiquement dans `data/duo.db`.
+Configurable via `BROKER_DB_PATH` — utiliser `:memory:` pour les tests.
 
 ## Tables
 
@@ -12,6 +13,7 @@ Stocke les informations sur les partenaires (instances Claude Code).
 |---------|------|-------------|
 | `id` | TEXT (PK) | Identifiant unique (basé sur le nom du dossier projet) |
 | `name` | TEXT | Nom d'affichage du partenaire |
+| `partner_key` | TEXT (UNIQUE) | Clé Bearer UUID — auth de toutes les requêtes |
 | `project_path` | TEXT | Chemin absolu du projet (pour les notifications CLAUDE.md) |
 | `created_at` | DATETIME | Date de première inscription |
 | `last_seen` | DATETIME | Dernière activité |
