@@ -8,5 +8,4 @@ drafts/
 
 # Local config
 .claude-duo-friends.json
-CLAUDE.md
 proxy_connect.py
