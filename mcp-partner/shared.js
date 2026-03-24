@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
-const BROKER_URL = process.env.BROKER_URL || "http://localhost:3210";
+const BROKER_URL = process.env.BROKER_URL || "https://duo.etheryale.com";
 const PARTNER_KEY = process.env.PARTNER_KEY || "";
 const PARTNER_NAME = process.env.PARTNER_NAME || "Claude";
 
