@@ -5,14 +5,15 @@ import { fileURLToPath } from "url";
 import { mkdirSync } from "fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const dataDir = join(__dirname, "..", "data");
 
-// Créer le dossier data
-try {
-  mkdirSync(dataDir, { recursive: true });
-} catch {}
+// BROKER_DB_PATH permet de pointer vers un fichier custom ou ":memory:" pour les tests
+const dbPath = process.env.BROKER_DB_PATH || join(__dirname, "..", "data", "duo.db");
 
-const dbPath = join(dataDir, "duo.db");
+if (dbPath !== ":memory:") {
+  const dataDir = join(__dirname, "..", "data");
+  try { mkdirSync(dataDir, { recursive: true }); } catch {}
+}
+
 const db = new Database(dbPath);
 
 // Activer les foreign keys et forcer le checkpoint WAL pour éviter la perte de données

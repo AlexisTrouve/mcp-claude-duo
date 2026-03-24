@@ -124,7 +124,7 @@ app.post("/talk", requireAuth, (req, res) => {
   const sender = req.partner;
   const { to, friendKey, conversationId, content } = req.body;
 
-  if (!content) {
+  if (!content || !content.trim()) {
     return res.status(400).json({ error: "content required" });
   }
 
@@ -382,7 +382,12 @@ app.get("/conversations/:conversationId/messages", requireAuth, (req, res) => {
  */
 app.get("/messages/:conversationId", requireAuth, (req, res) => {
   const { conversationId } = req.params;
-  const after = parseInt(req.query.after) || 0;
+  // Valider after : doit être un entier >= 0 (0 = depuis le début)
+  const rawAfter = req.query.after;
+  const after = rawAfter === undefined ? 0 : parseInt(rawAfter, 10);
+  if (rawAfter !== undefined && (!Number.isInteger(after) || after < 0)) {
+    return res.status(400).json({ error: "after must be a non-negative integer" });
+  }
   const limit = Math.min(parseInt(req.query.limit) || 100, 500);
 
   const conv = DB.getConversation(conversationId);

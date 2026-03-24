@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "broker": "node broker/index.js",
-    "start:broker": "node broker/index.js"
+    "start:broker": "node broker/index.js",
+    "test": "node --test test/v3.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
