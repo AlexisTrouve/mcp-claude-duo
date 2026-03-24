@@ -146,12 +146,7 @@ app.post("/talk", requireAuth, (req, res) => {
     }
     targetIds = DB.getParticipants(conversationId).map(p => p.id).filter(id => id !== sender.id);
   } else {
-    // Conversation directe — require friendKey
-    if (!friendKey) {
-      return res.status(403).json({ error: "friendKey required for direct messages" });
-    }
-
-    // Validate friendKey matches the recipient
+    // Conversation directe
     const recipient = DB.getPartner(to);
     if (!recipient) {
       return res.status(404).json({
@@ -160,7 +155,8 @@ app.post("/talk", requireAuth, (req, res) => {
       });
     }
 
-    if (recipient.partner_key !== friendKey) {
+    // friendKey optionnel : si fourni, on valide ; sinon auto-trust (même broker)
+    if (friendKey && recipient.partner_key !== friendKey) {
       return res.status(403).json({ error: "Invalid friendKey — does not match recipient" });
     }
 
@@ -262,6 +258,20 @@ app.get("/listen/:partnerId", requireAuth, (req, res) => {
 
   waitingPartners.set(partnerId, { res, heartbeat, timeout, conversationId });
   console.log(`[BROKER] ${partnerId} is now listening${conversationId ? ` on ${conversationId}` : ""}`);
+
+  // Re-check immédiatement après enregistrement pour couvrir la race condition :
+  // un message peut être arrivé entre le premier check (ligne ~212) et l'ajout dans waitingPartners
+  {
+    let lateMessages;
+    if (conversationId) {
+      lateMessages = DB.getUnreadMessagesInConv(partnerId, conversationId);
+    } else {
+      lateMessages = DB.getUnreadMessages(partnerId);
+    }
+    if (lateMessages.length > 0) {
+      notifyWaitingPartner(partnerId, conversationId || null);
+    }
+  }
 });
 
 /**
@@ -279,11 +289,8 @@ app.post("/conversations", requireAuth, (req, res) => {
     return res.status(400).json({ error: "name and participants required" });
   }
 
-  if (!friendKeys || friendKeys.length !== participants.length) {
-    return res.status(400).json({ error: "friendKeys required — one key per participant" });
-  }
-
-  // Verify all participants exist and friendKeys match
+  // friendKeys optionnels : si fournis, on valide ; sinon auto-trust (même broker)
+  // Verify all participants exist, and validate friendKeys only if provided
   for (let i = 0; i < participants.length; i++) {
     const pid = participants[i];
     if (pid === creator.id) continue; // skip self
@@ -291,7 +298,7 @@ app.post("/conversations", requireAuth, (req, res) => {
     if (!p) {
       return res.status(404).json({ error: `Partner "${pid}" not found` });
     }
-    if (p.partner_key !== friendKeys[i]) {
+    if (friendKeys && friendKeys[i] && friendKeys[i] !== "self" && p.partner_key !== friendKeys[i]) {
       return res.status(403).json({ error: `Invalid friendKey for participant "${pid}"` });
     }
   }
@@ -367,6 +374,33 @@ app.get("/conversations/:conversationId/messages", requireAuth, (req, res) => {
 });
 
 /**
+ * Polling fiable avec cursor par ID de message
+ * GET /messages/:conversationId?after=<lastMessageId>&limit=100
+ * Auth: Bearer must be a participant
+ * Retourne les messages dont l'ID est > after (0 = tous)
+ * Le client maintient son propre cursor → zéro message perdu
+ */
+app.get("/messages/:conversationId", requireAuth, (req, res) => {
+  const { conversationId } = req.params;
+  const after = parseInt(req.query.after) || 0;
+  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+
+  const conv = DB.getConversation(conversationId);
+  if (!conv) {
+    return res.status(404).json({ error: "Conversation not found" });
+  }
+
+  if (!DB.isParticipant(conversationId, req.partner.id)) {
+    return res.status(403).json({ error: "Not a participant of this conversation" });
+  }
+
+  const messages = DB.getMessagesAfter(conversationId, after, limit);
+  const lastId = messages.length > 0 ? messages[messages.length - 1].id : after;
+
+  res.json({ messages, cursor: lastId, hasMore: messages.length === limit });
+});
+
+/**
  * Obtenir les participants d'une conversation
  * GET /conversations/:conversationId/participants
  * Auth: Bearer must be a participant
@@ -380,6 +414,33 @@ app.get("/conversations/:conversationId/participants", requireAuth, (req, res) =
 
   const participants = DB.getParticipants(conversationId);
   res.json({ participants });
+});
+
+/**
+ * Directory — liste enrichie pour l'auto-discovery (public, sans keys)
+ * GET /directory?search=xxx
+ * Même données que /partners + isListening explicite
+ */
+app.get("/directory", (req, res) => {
+  let partners = DB.getAllPartners().map((p) => ({
+    id: p.id,
+    name: p.name,
+    project_path: p.project_path,
+    status: p.status,
+    status_message: p.status_message,
+    last_seen: p.last_seen,
+    isListening: waitingPartners.has(p.id),
+  }));
+
+  const search = req.query.search;
+  if (search) {
+    const q = search.toLowerCase();
+    partners = partners.filter(p =>
+      p.id.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)
+    );
+  }
+
+  res.json({ partners, count: partners.length });
 });
 
 /**

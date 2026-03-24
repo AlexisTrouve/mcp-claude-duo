@@ -184,6 +184,14 @@ const stmts = {
     ORDER BY created_at ASC
   `),
 
+  // Polling par cursor ID — retourne les messages dont l'ID > after (0 = tous)
+  getMessagesAfter: db.prepare(`
+    SELECT * FROM messages
+    WHERE conversation_id = ? AND id > ?
+    ORDER BY id ASC
+    LIMIT ?
+  `),
+
   getUnreadMessages: db.prepare(`
     SELECT m.* FROM messages m
     JOIN conversation_participants cp ON m.conversation_id = cp.conversation_id
@@ -335,6 +343,11 @@ export const DB = {
 
   markConversationRead(convId, partnerId) {
     stmts.updateLastRead.run(convId, partnerId);
+  },
+
+  // Polling par cursor : messages dont ID > after (after=0 → tous)
+  getMessagesAfter(convId, after = 0, limit = 100) {
+    return stmts.getMessagesAfter.all(convId, after, limit);
   },
 
   // Raw access

@@ -1,5 +1,4 @@
 import { brokerFetch, myId, ensureRegistered } from "../shared.js";
-import { getFriendKey } from "../friends.js";
 
 export const definition = {
   name: "talk",
@@ -53,28 +52,11 @@ export async function handler(args) {
       }
     }
 
-    // For DMs, auto-lookup friend key
-    let friendKey = null;
-    if (args.to) {
-      friendKey = getFriendKey(args.to);
-      if (!friendKey) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `"${args.to}" n'est pas dans ta liste d'amis. Utilise \`add_friend\` pour l'ajouter d'abord.`,
-            },
-          ],
-          isError: true,
-        };
-      }
-    }
-
+    // v3 : friendKey supprimé — le broker auto-trust les partenaires sur le même broker
     const response = await brokerFetch("/talk", {
       method: "POST",
       body: JSON.stringify({
         to: args.to,
-        friendKey,
         conversationId: args.conversation,
         content: args.message,
       }),
